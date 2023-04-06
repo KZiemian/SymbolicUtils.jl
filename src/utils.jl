@@ -27,49 +27,6 @@ end
 
 using Base: ImmutableDict
 
-# Linked List interface
-@inline assoc(d::ImmutableDict, k, v) = ImmutableDict(d, k=>v)
-
-struct LL{V}
-    v::V
-    i::Int
-end
-
-islist(x) = istree(x) || !isempty(x)
-
-Base.empty(l::LL) = empty(l.v)
-Base.isempty(l::LL) = l.i > length(l.v)
-
-Base.length(l::LL) = length(l.v)-l.i+1
-@inline car(l::LL) = l.v[l.i]
-@inline cdr(l::LL) = isempty(l) ? empty(l) : LL(l.v, l.i+1)
-
-Base.length(t::Term) = length(arguments(t)) + 1 # PIRACY
-Base.isempty(t::Term) = false
-@inline car(t::Term) = operation(t)
-@inline cdr(t::Term) = arguments(t)
-
-@inline car(v) = istree(v) ? operation(v) : first(v)
-@inline function cdr(v)
-    if istree(v)
-        arguments(v)
-    else
-        islist(v) ? LL(v, 2) : error("asked cdr of empty")
-    end
-end
-
-@inline take_n(ll::LL, n) = isempty(ll) || n == 0 ? empty(ll) : @views ll.v[ll.i:n+ll.i-1] # @views handles Tuple
-@inline take_n(ll, n) = @views ll[1:n]
-
-@inline function drop_n(ll, n)
-    if n === 0
-        return ll
-    else
-        istree(ll) ? drop_n(arguments(ll), n-1) : drop_n(cdr(ll), n-1)
-    end
-end
-@inline drop_n(ll::Union{Tuple, AbstractArray}, n) = drop_n(LL(ll, 1), n)
-@inline drop_n(ll::LL, n) = LL(ll.v, ll.i+n)
 
 pow(x,y) = y==0 ? 1 : y<0 ? inv(x)^(-y) : x^y
 pow(x::Symbolic,y) = y==0 ? 1 : Base.:^(x,y)
@@ -77,15 +34,15 @@ pow(x, y::Symbolic) = Base.:^(x,y)
 pow(x::Symbolic,y::Symbolic) = Base.:^(x,y)
 
 # Simplification utilities
-function has_trig(term)
+function has_trig_exp(term)
     !istree(term) && return false
-    fns = (sin, cos, tan, cot, sec, csc)
+    fns = (sin, cos, tan, cot, sec, csc, exp)
     op = operation(term)
 
-    if Base.@nany 6 i->fns[i] === op
+    if Base.@nany 7 i->fns[i] === op
         return true
     else
-        return any(has_trig, arguments(term))
+        return any(has_trig_exp, arguments(term))
     end
 end
 
@@ -106,7 +63,6 @@ end
 ### Predicates
 
 sym_isa(::Type{T}) where {T} = @nospecialize(x) -> x isa T || symtype(x) <: T
-is_operation(f) = @nospecialize(x) -> istree(x) && (operation(x) == f)
 
 isliteral(::Type{T}) where {T} = x -> x isa T
 is_literal_number(x) = isliteral(Number)(x)
@@ -115,6 +71,7 @@ is_literal_number(x) = isliteral(Number)(x)
 _iszero(x) = x isa Number && iszero(x)
 _isone(x) = x isa Number && isone(x)
 _isinteger(x) = (x isa Number && isinteger(x)) || (x isa Symbolic && symtype(x) <: Integer)
+_isreal(x) = (x isa Number && isreal(x)) || (x isa Symbolic && symtype(x) <: Real)
 
 issortedₑ(args) = issorted(args, lt=<ₑ)
 needs_sorting(f) = x -> is_operation(f)(x) && !issortedₑ(arguments(x))
@@ -166,8 +123,19 @@ function merge_repeats(merge, xs)
     return merged
 end
 
+"""
+    flatten_term(⋆, x)
 
-# Numbers to the back
+Return a flattened expression with the numbers at the back.
+
+# Example
+```jldoctest
+julia> @syms x y;
+
+julia> SymbolicUtils.flatten_term(+, y + y + x)
+x + 2y
+```
+"""
 function flatten_term(⋆, x)
     args = arguments(x)
     # flatten nested ⋆
@@ -194,6 +162,50 @@ function sort_args(f, t)
     similarterm(t, f, sort(args, lt=<ₑ))
 end
 
+# Linked List interface
+@inline assoc(d::ImmutableDict, k, v) = ImmutableDict(d, k=>v)
+
+struct LL{V}
+    v::V
+    i::Int
+end
+
+islist(x) = istree(x) || !isempty(x)
+
+Base.empty(l::LL) = empty(l.v)
+Base.isempty(l::LL) = l.i > length(l.v)
+
+Base.length(l::LL) = length(l.v)-l.i+1
+@inline car(l::LL) = l.v[l.i]
+@inline cdr(l::LL) = isempty(l) ? empty(l) : LL(l.v, l.i+1)
+
+Base.length(t::Term) = length(arguments(t)) + 1 # PIRACY
+Base.isempty(t::Term) = false
+@inline car(t::Term) = operation(t)
+@inline cdr(t::Term) = arguments(t)
+
+@inline car(v) = istree(v) ? operation(v) : first(v)
+@inline function cdr(v)
+    if istree(v)
+        arguments(v)
+    else
+        islist(v) ? LL(v, 2) : error("asked cdr of empty")
+    end
+end
+
+@inline take_n(ll::LL, n) = isempty(ll) || n == 0 ? empty(ll) : @views ll.v[ll.i:n+ll.i-1] # @views handles Tuple
+@inline take_n(ll, n) = @views ll[1:n]
+
+@inline function drop_n(ll, n)
+    if n === 0
+        return ll
+    else
+        istree(ll) ? drop_n(arguments(ll), n-1) : drop_n(cdr(ll), n-1)
+    end
+end
+@inline drop_n(ll::Union{Tuple, AbstractArray}, n) = drop_n(LL(ll, 1), n)
+@inline drop_n(ll::LL, n) = LL(ll.v, ll.i+n)
+
 # Take a struct definition and make it be able to match in `@rule`
 macro matchable(expr)
     @assert expr.head == :struct
@@ -211,5 +223,13 @@ macro matchable(expr)
         SymbolicUtils.operation(::$name) = $name
         SymbolicUtils.arguments(x::$name) = getfield.((x,), ($(QuoteNode.(fields)...),))
         Base.length(x::$name) = $(length(fields) + 1)
+        SymbolicUtils.similarterm(x::$name, f, args, type; kw...) = f(args...)
     end |> esc
 end
+
+"""
+  node_count(t)
+Count the nodes in a symbolic expression tree satisfying `istree` and `arguments`.
+"""
+node_count(t) = istree(t) ? reduce(+, node_count(x) for x in arguments(t), init = 0) + 1 : 1
+

@@ -6,6 +6,7 @@
 # 3. Callback: takes arguments Dictionary × Number of elements matched
 #
 function matcher(val::Any)
+    istree(val) && return term_matcher(val)
     function literal_matcher(next, data, bindings)
         islist(data) && isequal(car(data), val) ? next(bindings, 1) : nothing
     end
@@ -83,12 +84,12 @@ function matcher(segment::Segment)
     end
 end
 
-function matcher(term::Term)
+function term_matcher(term)
     matchers = (matcher(operation(term)), map(matcher, arguments(term))...,)
     function term_matcher(success, data, bindings)
 
         !islist(data) && return nothing
-        !(istree(car(data))) && return nothing
+        !istree(car(data)) && return nothing
 
         function loop(term, bindings′, matchers′) # Get it to compile faster
             if !islist(matchers′)

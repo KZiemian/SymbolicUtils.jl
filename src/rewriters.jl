@@ -3,7 +3,7 @@ A rewriter is any function which takes an expression and returns an expression
 or `nothing`. If `nothing` is returned that means there was no changes applicable
 to the input expression.
 
-The `SymbolicUtils.Rewriters` module contains some types which create and transform
+The `Rewriters` module contains some types which create and transform
 rewriters.
 
 - `Empty()` is a rewriter which always returns `nothing`
@@ -16,18 +16,23 @@ rewriters.
    returns true, `rw2` if it retuns false
 - `If(cond, rw)` is the same as `IfElse(cond, rw, Empty())`
 - `Prewalk(rw; threaded=false, thread_cutoff=100)` returns a rewriter which does a pre-order
-   traversal of a given expression and applies the rewriter `rw`. `threaded=true` will
-   use multi threading for traversal. `thread_cutoff` is the minimum number of nodes
-   in a subtree which should be walked in a threaded spawn.
+   traversal of a given expression and applies the rewriter `rw`. Note that if
+   `rw` returns `nothing` when a match is not found, then `Prewalk(rw)` will
+   also return nothing unless a match is found at every level of the walk.
+   `threaded=true` will use multi threading for traversal. `thread_cutoff` is
+   the minimum number of nodes in a subtree which should be walked in a
+   threaded spawn.
 - `Postwalk(rw; threaded=false, thread_cutoff=100)` similarly does post-order traversal.
 - `Fixpoint(rw)` returns a rewriter which applies `rw` repeatedly until there are no changes to be made.
+- `FixpointNoCycle` behaves like [`Fixpoint`](@ref) but instead it applies `rw` repeatedly only while it is returning new results.
 - `PassThrough(rw)` returns a rewriter which if `rw(x)` returns `nothing` will instead
    return `x` otherwise will return `rw(x)`.
 
 """
 module Rewriters
-using SymbolicUtils: @timer, is_operation, istree, operation, similarterm, arguments, node_count
+using SymbolicUtils: @timer
 
+import SymbolicUtils: similarterm, istree, operation, arguments, unsorted_arguments, node_count
 export Empty, IfElse, If, Chain, RestartedChain, Fixpoint, Postwalk, Prewalk, PassThrough
 
 # Cache of printed rules to speed up @timer
@@ -38,11 +43,16 @@ struct Empty end
 
 (rw::Empty)(x) = nothing
 
+instrument(x, f) = f(x)
+instrument(x::Empty, f) = x
+
 struct IfElse{F, A, B}
     cond::F
     yes::A
     no::B
 end
+
+instrument(x::IfElse, f) = IfElse(x.cond, instrument(x.yes, f), instrument(x.no, f))
 
 function (rw::IfElse)(x)
     rw.cond(x) ?  rw.yes(x) : rw.no(x)
@@ -64,10 +74,13 @@ function (rw::Chain)(x)
     return x
 end
 
+instrument(c::Chain, f) = Chain(map(x->instrument(x,f), c.rws))
 
 struct RestartedChain{Cs}
     rws::Cs
 end
+
+instrument(c::RestartedChain, f) = RestartedChain(map(x->instrument(x,f), c.rws))
 
 function (rw::RestartedChain)(x)
     for f in rw.rws
@@ -92,18 +105,55 @@ end
         return x
     end
 end
+
+
 struct Fixpoint{C}
     rw::C
 end
+
+instrument(x::Fixpoint, f) = Fixpoint(instrument(x.rw, f))
 
 function (rw::Fixpoint)(x)
     f = rw.rw
     y = @timer cached_repr(f) f(x)
     while x !== y && !isequal(x, y)
-        isnothing(y) && return x
+        y === nothing && return x
         x = y
         y = @timer cached_repr(f) f(x)
     end
+    return x
+end
+
+"""
+    FixpointNoCycle(rw)
+
+`FixpointNoCycle` behaves like [`Fixpoint`](@ref),
+but returns a rewriter which applies `rw` repeatedly until 
+it produces a result that was already produced before, for example, 
+if the repeated application of `rw` produces results `a, b, c, d, b` in order, 
+`FixpointNoCycle` stops because `b` has been already produced. 
+"""
+struct FixpointNoCycle{C}
+    rw::C
+    hist::Vector{UInt64} # vector of hashes for history
+end
+
+instrument(x::FixpointNoCycle, f) = Fixpoint(instrument(x.rw, f))
+
+function (rw::FixpointNoCycle)(x)
+    f = rw.rw
+    push!(rw.hist, hash(x))
+    y = @timer cached_repr(f) f(x)
+    while x !== y && hash(x) ∉ hist
+        if y === nothing 
+            empty!(rw.hist)
+            return x
+        end
+        push!(rw.hist, y)
+        x = y
+        y = @timer cached_repr(f) f(x)
+    end
+    empty!(rw.hist)
     return x
 end
 
@@ -111,6 +161,13 @@ struct Walk{ord, C, F, threaded}
     rw::C
     thread_cutoff::Int
     similarterm::F
+end
+
+function instrument(x::Walk{ord, C,F,threaded}, f) where {ord,C,F,threaded}
+    irw = instrument(x.rw, f)
+    Walk{ord, typeof(irw), typeof(x.similarterm), threaded}(irw,
+                                                            x.thread_cutoff,
+                                                            x.similarterm)
 end
 
 using .Threads
@@ -126,9 +183,11 @@ end
 struct PassThrough{C}
     rw::C
 end
-(p::PassThrough)(x) = (y=p.rw(x); isnothing(y) ? x : y)
+instrument(x::PassThrough, f) = PassThrough(instrument(x.rw, f))
 
-passthrough(x, default) = isnothing(x) ? default : x
+(p::PassThrough)(x) = (y=p.rw(x); y === nothing ? x : y)
+
+passthrough(x, default) = x === nothing ? default : x
 function (p::Walk{ord, C, F, false})(x) where {ord, C, F}
     @assert ord === :pre || ord === :post
     if istree(x)
@@ -136,7 +195,7 @@ function (p::Walk{ord, C, F, false})(x) where {ord, C, F}
             x = p.rw(x)
         end
         if istree(x)
-            x = p.similarterm(x, operation(x), map(PassThrough(p), arguments(x)))
+            x = p.similarterm(x, operation(x), map(PassThrough(p), unsorted_arguments(x)))
         end
         return ord === :post ? p.rw(x) : x
     else
@@ -167,5 +226,20 @@ function (p::Walk{ord, C, F, true})(x) where {ord, C, F}
     end
 end
 
+function instrument_io(x)
+    function io_instrumenter(r)
+        function (args...)
+            println("Rule: ", r)
+            println("Input: ", args)
+            res = r(args...)
+            println("Output: ", res)
+            res
+        end
+    end
+
+    instrument(x, io_instrumenter)
+end
+
 end # end module
+
 

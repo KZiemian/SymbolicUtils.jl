@@ -1,5 +1,6 @@
 using BenchmarkTools, SymbolicUtils
-using SymbolicUtils: is_literal_number
+using SymbolicUtils: is_literal_number, @rule
+using Metatheory
 
 using Random
 
@@ -47,10 +48,10 @@ let r = @rule(~x => ~x), rs = RuleSet([r]),
     ex1 = random_term(1000, atoms=[a, b, c, d, a^(-1), b^(-1), 1, 2.0], funs=[+, *])
     ex2 = random_term(1000, atoms=[a, b, c, d, a^(-1), b^(-1), 1, 2.0], funs=[/, *])
 
-    overhead["simplify"]["randterm (+, *):serial"] = @benchmarkable simplify($ex1, threaded=false)
-    overhead["simplify"]["randterm (/, *):serial"] = @benchmarkable simplify($ex2, threaded=false)
-    overhead["simplify"]["randterm (+, *):thread"] = @benchmarkable simplify($ex1, threaded=true)
-    overhead["simplify"]["randterm (/, *):thread"] = @benchmarkable simplify($ex2, threaded=true)
+    overhead["simplify"]["randterm (+, *):serial"] = @benchmarkable simplify($ex1, simplify_fractions=false, threaded=false)
+    overhead["simplify"]["randterm (/, *):serial"] = @benchmarkable simplify($ex2, simplify_fractions=false, threaded=false)
+    overhead["simplify"]["randterm (+, *):thread"] = @benchmarkable simplify($ex1, simplify_fractions=false, threaded=true)
+    overhead["simplify"]["randterm (/, *):thread"] = @benchmarkable simplify($ex2, simplify_fractions=false, threaded=true)
 
     overhead["substitute"] = BenchmarkGroup()
 
@@ -66,4 +67,22 @@ let r = @rule(~x => ~x), rs = RuleSet([r]),
     overhead["substitute"]["a,b,c"] = @benchmarkable substitute(subs_expr, $(Dict(a=>1, b=>2, c=>3))) setup=begin
         subs_expr = (sin(a+b) + cos(b+c)) * (sin(b+c) + cos(c+a)) * (sin(c+a) + cos(a+b))
     end
+
+
+end
+
+let
+    pform = SUITE["polyform"]  = BenchmarkGroup()
+    @syms a b c d e f g h i
+    ex = (f + ((((g*(c^2)*(e^2)) / d - e*h*(c^2)) / b + (-c*e*f*g) / d + c*e*i) /
+              (i + ((c*e*g) / d - c*h) / b + (-f*g) / d) - c*e) / b +
+         ((g*(f^2)) / d + ((-c*e*f*g) / d + c*f*h) / b - f*i) /
+         (i + ((c*e*g) / d - c*h) / b + (-f*g) / d)) / d
+
+    o = (d + (e*((c*(g + (-d*g) / d)) / (i + (-c*(h + (-e*g) / d)) / b + (-f*g) / d))) / b +
+         (-f*(g + (-d*g) / d)) / (i + (-c*(h + (-e*g) / d)) / b + (-f*g) / d)) / d
+    pform["simplify_fractions"] = @benchmarkable simplify_fractions($ex)
+    pform["iszero"] = @benchmarkable SymbolicUtils.fraction_iszero($ex)
+    pform["isone"] = @benchmarkable SymbolicUtils.fraction_isone($o)
+    pform["easy_iszero"] = @benchmarkable SymbolicUtils.fraction_iszero($((b*(h + (-e*g) / d)) / b + (e*g) / d - h))
 end

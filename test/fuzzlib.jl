@@ -1,5 +1,9 @@
 using SymbolicUtils
+using SymbolicUtils: Term
+using SpecialFunctions
 using Test
+import IfElse: ifelse
+import IfElse
 
 using SymbolicUtils: showraw, Symbolic
 
@@ -42,8 +46,8 @@ const num_spec = let
     nopow  = filter(x->x!==(^), binops)
     twoargfns = vcat(nopow, (x,y)->x isa Union{Int, Rational, Complex{<:Rational}} ? x * y : x^y)
     fns = vcat(1 .=> vcat(SymbolicUtils.monadic, [one, zero]),
-               2 .=> vcat(twoargfns, fill(+, 5), [-,-], fill(*, 5)),
-    3 .=> [+, *])
+               2 .=> vcat(twoargfns, fill(+, 5), [-,-], fill(*, 5), fill(/, 40)),
+               3 .=> [+, *])
 
 
     (leaves=leaf_funcs, funcs=fns, input=rand_input)
@@ -74,7 +78,7 @@ function gen_rand_expr(inputs;
 
     if depth > max_depth  || (min_depth <= depth && rand() < leaf_prob)
         leaf = rand(spec.leaves)()
-        if leaf isa SymbolicUtils.Sym
+        if issym(leaf)
             push!(inputs, leaf)
         elseif leaf isa Pair
             foreach(i->push!(inputs, i), leaf[1])
@@ -101,6 +105,9 @@ function gen_rand_expr(inputs;
                                  min_depth=min_depth,
                                  max_depth=max_depth)
         else
+            @show f
+            @show arity
+            @show args
             rethrow(err)
         end
     end
@@ -114,9 +121,14 @@ function fuzz_test(ntrials, spec, simplify=simplify;kwargs...)
     inputs = Set()
     expr = gen_rand_expr(inputs; spec=spec, kwargs...)
     inputs = collect(inputs)
+    code = try
+        SymbolicUtils.Code.toexpr(expr)
+    catch err
+        rethrow(err)
+    end
     unsimplifiedstr = """
     function $(tuple(inputs...))
-        $(sprint(io->showraw(io, expr)))
+        $(sprint(io->print(io, code)))
     end
     """
 
@@ -211,7 +223,7 @@ end
 
 test_dict = Dict{Any, Rational{BigInt}}(a=>1,b=>-1,c=>2,d=>-2,e=>5//3,g=>-2//3)
 function fuzz_addmulpow(lvl, d=test_dict)
-    l, r = gen_expr()
+    l, r = gen_expr(lvl)
     rl = try
         substitute(l, d)
     catch err
@@ -223,14 +235,15 @@ function fuzz_addmulpow(lvl, d=test_dict)
         err
     end
 
-    if !(rl isa Number) && rr isa Number
-        return # lhs errored, rhs did not
+    if !(rl isa Number) || !(rr isa Number)
+        return
     end
     if rl isa Number || rr isa Number
         if isequal(rl, rr)
             @test true
         else
             println("Weird bug here:")
+            @show d
             @show r l
             @show rl rr
             @test false

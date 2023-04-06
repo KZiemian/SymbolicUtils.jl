@@ -1,21 +1,6 @@
-@def title = "SymbolicUtils.jl — Symbolic programming in Julia"
-@def hasmath = false
-@def hascode = true
-<!-- Note: by default hasmath == true and hascode == false. You can change this in
-the config file by setting hasmath = false for instance and just setting it to true
-where appropriate -->
+# SymbolicUtils.jl — Symbolic programming in Julia
 
-~~~
-<h1>SymbolicUtils.jl &mdash; home</h1>
-~~~
-
-~~~
-<p style="font-size: 1.25em; line-height: 1.67em; text-align: center; margin: 1em 0; color: #111;">
-<a href="https://github.com/JuliaSymbolics/SymbolicUtils.jl">SymbolicUtils</a> is an practical symbolic programming utility in Julia. It lets you <a href="#symbolic_expressions">create</a>, <a href="#rule-based_rewriting">rewrite</a> and <a href="#simplification">simplify</a> symbolic expressions, and <a href="/codegen/">generate Julia code</a> from them.
-</p>
-~~~
-
-**Features:**
+## Features
 
 - Fast expressions
 - A [rule-based rewriting language](/rewrite/#rule-based_rewriting).
@@ -26,17 +11,6 @@ where appropriate -->
   - Compound expressions composed of `Sym`s propagate type information. ([read more](#expression_interface))
 - Set of extendable [simplification rules](#simplification).
 
-
-~~~
-<br>
-<h1>
- Getting Started
-</h1>
-~~~
-
-**Table of contents**
-
-\tableofcontents <!-- you can use \toc as well -->
 
 ## Creating symbolic expressions
 
@@ -105,7 +79,7 @@ expressions of type `Symbolic{<:Number}` (which includes `Sym{Real}`) when they 
 It's worth remembering that the expression may be transformed with respect to the input when it's created.
 
 
-**Function-like symbols**
+## Function-like symbols
 
 Symbols can be defined to behave like functions. Both the input and output types for the function can be specified. Any application to that function will only admit either values of those types or symbols of the same `symtype`.
 

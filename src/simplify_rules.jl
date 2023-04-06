@@ -1,4 +1,10 @@
 using .Rewriters
+"""
+  is_operation(f)
+Returns a single argument anonymous function predicate, that returns `true` if and only if
+the argument to the predicate satisfies `istree` and `operation(x) == f` 
+"""
+is_operation(f) = @nospecialize(x) -> istree(x) && (operation(x) == f)
 
 let
     PLUS_RULES = [
@@ -39,7 +45,8 @@ let
         @rule((((~x)^(~p::_isinteger))^(~q::_isinteger)) => (~x)^((~p)*(~q)))
         @rule(^(~x, ~z::_iszero) => 1)
         @rule(^(~x, ~z::_isone) => ~x)
-        @rule(inv(~x) => ~x ^ -1)
+        @rule(inv(~x) => 1/(~x))
+        @rule(^(~x::_isone, ~z) => 1)
     ]
 
     ASSORTED_RULES = [
@@ -48,24 +55,37 @@ let
         @rule(-(~x, ~y) => ~x + -1(~y))
         @rule(~x::_isone \ ~y => ~y)
         @rule(~x \ ~y => ~y / (~x))
-        @rule(~x / ~y => ~x * pow(~y, -1))
         @rule(one(~x) => one(symtype(~x)))
         @rule(zero(~x) => zero(symtype(~x)))
+        @rule(conj(~x::_isreal) => ~x)
+        @rule(real(~x::_isreal) => ~x)
+        @rule(imag(~x::_isreal) => zero(symtype(~x)))
         @rule(ifelse(~x::is_literal_number, ~y, ~z) => ~x ? ~y : ~z)
+        @rule(ifelse(~x, ~y, ~y) => ~y)
     ]
 
-    TRIG_RULES = [
+    TRIG_EXP_RULES = [
+        @acrule(~r*~x::has_trig_exp + ~r*~y => ~r*(~x + ~y))
+        @acrule(~r*~x::has_trig_exp + -1*~r*~y => ~r*(~x - ~y))
         @acrule(sin(~x)^2 + cos(~x)^2 => one(~x))
-        @acrule(sin(~x)^2 + -1        => cos(~x)^2)
-        @acrule(cos(~x)^2 + -1        => sin(~x)^2)
+        @acrule(sin(~x)^2 + -1        => -1*cos(~x)^2)
+        @acrule(cos(~x)^2 + -1        => -1*sin(~x)^2)
+
+        @acrule(cos(~x)^2 + -1*sin(~x)^2 => cos(2 * ~x))
+        @acrule(sin(~x)^2 + -1*cos(~x)^2 => -cos(2 * ~x))
+        @acrule(cos(~x) * sin(~x) => sin(2 * ~x)/2)
 
         @acrule(tan(~x)^2 + -1*sec(~x)^2 => one(~x))
+        @acrule(-1*tan(~x)^2 + sec(~x)^2 => one(~x))
         @acrule(tan(~x)^2 +  1 => sec(~x)^2)
         @acrule(sec(~x)^2 + -1 => tan(~x)^2)
 
         @acrule(cot(~x)^2 + -1*csc(~x)^2 => one(~x))
         @acrule(cot(~x)^2 +  1 => csc(~x)^2)
         @acrule(csc(~x)^2 + -1 => cot(~x)^2)
+
+        @acrule(exp(~x) * exp(~y) => _iszero(~x + ~y) ? 1 : exp(~x + ~y))
+        @rule(exp(~x)^(~y) => exp(~x * ~y))
     ]
 
     BOOLEAN_RULES = [
@@ -110,7 +130,7 @@ let
         rule_tree
     end
 
-    trig_simplifier(;kw...) = Chain(TRIG_RULES)
+    trig_exp_simplifier(;kw...) = Chain(TRIG_EXP_RULES)
 
     bool_simplifier() = Chain(BOOLEAN_RULES)
 
@@ -118,13 +138,13 @@ let
     global serial_simplifier
     global threaded_simplifier
     global serial_simplifier
-    global serial_polynormal_simplifier
+    global serial_expand_simplifier
 
     function default_simplifier(; kw...)
-        IfElse(has_trig,
+        IfElse(has_trig_exp,
                Postwalk(IfElse(x->symtype(x) <: Number,
                                Chain((number_simplifier(),
-                                      trig_simplifier())),
+                                      trig_exp_simplifier())),
                                If(x->symtype(x) <: Bool,
                                   bool_simplifier()))
                         ; kw...),
@@ -141,8 +161,8 @@ let
     threaded_simplifier(cutoff) = Fixpoint(default_simplifier(threaded=true,
                                                               thread_cutoff=cutoff))
 
-    serial_polynormal_simplifier = If(istree,
-                                      Fixpoint(Chain((polynormalize,
-                                                      Fixpoint(default_simplifier())))))
+    serial_expand_simplifier = If(istree,
+                                  Fixpoint(Chain((expand,
+                                                  Fixpoint(default_simplifier())))))
 
 end

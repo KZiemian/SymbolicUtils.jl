@@ -69,8 +69,12 @@ function makepattern(expr, keys)
             else
                 :(term($(map(x->makepattern(x, keys), expr.args)...); type=Any))
             end
+        elseif expr.head === :ref
+            :(term(getindex, $(map(x->makepattern(x, keys), expr.args)...); type=Any))
+        elseif expr.head === :$
+            return esc(expr.args[1])
         else
-            error("Unsupported Expr of type $(expr.head) found in pattern")
+            Expr(expr.head, makepattern.(expr.args, (keys,))...)
         end
     else
         # treat as a literal
@@ -116,7 +120,7 @@ end
 getdepth(r::Rule) = r.depth
 
 function rule_depth(rule, d=0, maxdepth=0)
-    if rule isa Term
+    if istree(rule)
         maxdepth = reduce(max, (rule_depth(r, d+1, maxdepth) for r in arguments(rule)), init=1)
     elseif rule isa Slot || rule isa Segment
         maxdepth = max(d, maxdepth)
@@ -128,20 +132,35 @@ function Base.show(io::IO, r::Rule)
     Base.print(io, r.expr)
 end
 
-const EMPTY_DICT = ImmutableDict{Symbol, Any}(:____, nothing)
+const EMPTY_IMMUTABLE_DICT = ImmutableDict{Symbol, Any}(:____, nothing)
 
 function (r::Rule)(term)
     rhs = r.rhs
 
     try
-        return r.matcher((term,), EMPTY_DICT) do bindings, n
-            # n == 1 means that exactly one term of the input (term,) was matched
-            n === 1 ? (@timer "RHS" rhs(bindings)) : nothing
-        end
+        # n == 1 means that exactly one term of the input (term,) was matched
+        success(bindings, n) = n == 1 ? (@timer "RHS" rhs(bindings)) : nothing
+        return r.matcher(success, (term,), EMPTY_IMMUTABLE_DICT)
     catch err
         throw(RuleRewriteError(r, term))
     end
 end
+
+"""
+    rewrite_rhs(expr::Expr)
+
+Rewrite the `expr` by dealing with `:where` if necessary.
+The `:where` is rewritten from, for example, `~x where f(~x)` to `f(~x) ? ~x : nothing`.
+"""
+function rewrite_rhs(expr::Expr)
+    if expr.head == :where
+        rhs = expr.args[1]
+        predicate = expr.args[2]
+        expr = :($predicate ? $rhs : nothing)
+    end
+    return expr
+end
+rewrite_rhs(expr) = expr
 
 """
     @rule LHS => RHS
@@ -179,11 +198,11 @@ cos((1 + a))
 A rule with 2 segment variables
 
 ```julia
-julia> r = @rule ~x - ~y => ~x + (-(~y))
-~x - ~y => ~x + -(~y)
+julia> r = @rule sin(~x + ~y) => sin(~x)*cos(~y) + cos(~x)*sin(~y)
+sin(~x + ~y) => sin(~x) * cos(~y) + cos(~x) * sin(~y)
 
-julia> r(a-2b)
-(a + (-(2 * b)))
+julia> r(sin(a + b))
+cos(a)*sin(b) + sin(a)*cos(b)
 ```
 
 A rule that matches two of the same expressions:
@@ -218,7 +237,8 @@ julia> r(2 * (a+b+c))
 
 **Predicates**:
 
-Predicates can be used on both `~x` and `~~x` by using the `~x::f` or `~~x::f`.
+There are two kinds of predicates, namely over slot variables and over the whole rule.
+For the former, predicates can be used on both `~x` and `~~x` by using the `~x::f` or `~~x::f`.
 Here `f` can be any julia function. In the case of a slot the function gets a single
 matched subexpression, in the case of segment, it gets an array of matched expressions.
 
@@ -246,6 +266,25 @@ sin((a + c))
 
 Predicate function gets an array of values if attached to a segment variable (`~~x`).
 
+For the predicate over the whole rule, use `@rule <LHS> => <RHS> where <predicate>`:
+
+```
+julia> @syms a b;
+
+julia> predicate(x) = x === a;
+
+julia> r = @rule ~x => ~x where f(~x);
+
+julia> r(a)
+a
+
+julia> r(b) === nothing
+true
+```
+
+Note that this is syntactic sugar and that it is the same as something like
+`@rule ~x => f(~x) ? ~x : nothing`.
+
 **Context**:
 
 _In predicates_: Contextual predicates are functions wrapped in the `Contextual` type.
@@ -261,7 +300,8 @@ of an expression.
 """
 macro rule(expr)
     @assert expr.head == :call && expr.args[1] == :(=>)
-    lhs,rhs = expr.args[2], expr.args[3]
+    lhs = expr.args[2]
+    rhs = rewrite_rhs(expr.args[3])
     keys = Symbol[]
     lhs_term = makepattern(lhs, keys)
     unique!(keys)
@@ -273,6 +313,49 @@ macro rule(expr)
              matcher(lhs_pattern),
              __MATCHES__ -> $(makeconsequent(rhs)),
              rule_depth($lhs_term))
+    end
+end
+
+"""
+    @capture ex pattern
+
+Uses a `Rule` object to capture an expression if it matches the `pattern`. Returns `true` and injects
+slot variable match results into the calling scope when the `pattern` matches, otherwise returns false. The
+rule language for specifying the `pattern` is the same in @capture as it is in `@rule`. Contextual matching
+is not yet supported
+
+```julia
+julia> @syms a; ex = a^a;
+
+julia> if @capture ex (~x)^(~x)
+           @show x
+       elseif @capture ex 2(~y)
+           @show y
+       end;
+x = a
+```
+
+See also: [`@rule`](@ref)
+"""
+macro capture(ex, lhs)
+    keys = Symbol[]
+    lhs_term = makepattern(lhs, keys)
+    unique!(keys)
+    bind = Expr(:block, map(key-> :($(esc(key)) = getindex(__MATCHES__, $(QuoteNode(key)))), keys)...)
+    quote
+        $(__source__)
+        lhs_pattern = $(lhs_term)
+        __MATCHES__ = Rule($(QuoteNode(lhs)),
+             lhs_pattern,
+             matcher(lhs_pattern),
+             identity,
+             rule_depth($lhs_term))($(esc(ex)))
+        if __MATCHES__ !== nothing
+            $bind
+            true
+        else
+            false
+        end
     end
 end
 
@@ -316,16 +399,16 @@ function (acr::ACRule)(term)
         end
 
         T = symtype(term)
-        args = arguments(term)
+        args = unsorted_arguments(term)
 
         itr = acr.sets(eachindex(args), acr.arity)
 
         for inds in itr
             result = r(Term{T}(f, @views args[inds]))
-            if !isnothing(result)
+            if result !== nothing
                 # Assumption: inds are unique
                 length(args) == length(inds) && return result
-                return similarterm(term, f, [result, (args[i] for i in eachindex(args) if i ∉ inds)...])
+                return similarterm(term, f, [result, (args[i] for i in eachindex(args) if i ∉ inds)...], symtype(term))
             end
         end
     end
